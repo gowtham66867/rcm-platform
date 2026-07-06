@@ -2,6 +2,8 @@
 
 > **A purpose-built operating system for behavioral health billing teams — replacing ad-hoc coordination tools with structured workflows.**
 
+![Architecture](docs/architecture.svg)
+
 A multi-agent AI platform that catches hidden payer clawbacks, tracks Single Case Agreement lifecycles, and manages ERA/EFT enrollment status — built for behavioral health practices that can't afford to miss a $18,000 offset buried in an EOB.
 
 **Live demo:** https://texmed-platform-hagfyuumxa-uc.a.run.app  
