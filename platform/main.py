@@ -1,6 +1,6 @@
 """
 TexMed Platform — behavioral health RCM operating system.
-Replaces the WhatsApp group with a purpose-built platform that catches
+Purpose-built platform for behavioral health billing teams that catches
 hidden payer clawbacks, tracks SCA lifecycles, and manages ERA/EFT
 enrollment status across all active payers.
 

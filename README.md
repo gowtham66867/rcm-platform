@@ -1,6 +1,6 @@
 # TexMed — Behavioral Health RCM Platform
 
-> **Replaces the WhatsApp group that behavioral health billing teams use as their operating system.**
+> **A purpose-built operating system for behavioral health billing teams — replacing ad-hoc coordination tools with structured workflows.**
 
 A multi-agent AI platform that catches hidden payer clawbacks, tracks Single Case Agreement lifecycles, and manages ERA/EFT enrollment status — built for behavioral health practices that can't afford to miss a $18,000 offset buried in an EOB.
 
@@ -61,7 +61,7 @@ Result: APPROVED / ESCALATED / REJECTED
 Every human approve/dismiss decision upserts `feedback_stats`:
 
 ```
-Brittany dismisses a false positive for "generic" payer
+Billing coordinator dismisses a false positive for "generic" payer
     → FeedbackCalibrator.record_outcome()
         → false_positive_rate for "generic" rises to 0.73
             → confidence_adjustment = +0.20
@@ -214,7 +214,7 @@ When the system escalates a ticket with `ticket_type = "new_payer_pattern"`, tha
 
 ## Origin
 
-Built from 5 months of real WhatsApp transcripts from a behavioral health billing team. Every feature traces to a specific failure mode in those transcripts:
+Built from operational data and real failure modes observed running a behavioral health billing team. Every feature traces to a specific recurring problem:
 
 - Recoupment detector → Anthem/Haddad $18,020.11 offset, missed 90 days
 - SCA tracker → Cigna SCA expiry not noticed, 8 claims denied retroactively  
