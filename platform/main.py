@@ -44,7 +44,13 @@ app.include_router(enrollment_router)
 app.include_router(review_router)
 app.include_router(ws_pipeline_router)
 
+# Health check — registered before the SPA catch-all
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "service": "TexMed Platform"}
+
 # Serve frontend — plain HTML file (no build step needed)
+# Must be registered AFTER all /api/* routes so it doesn't shadow them.
 frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
 frontend_index = os.path.join(frontend_dir, "index.html")
 
@@ -55,14 +61,7 @@ if os.path.exists(frontend_index):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str):
-        # API routes are already registered above and take precedence;
-        # anything else falls through to the SPA.
         static = os.path.join(frontend_dir, full_path)
         if os.path.isfile(static):
             return FileResponse(static)
         return FileResponse(frontend_index)
-
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "service": "TexMed Platform"}
