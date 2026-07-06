@@ -78,7 +78,7 @@ After 100 tickets, false positive rate drops measurably per payer. That calibrat
 ## Project structure
 
 ```
-YC/
+texmed-platform/
 ├── patterns.json                    # payer-specific recoupment phrase library
 ├── detector.py                      # standalone CLI tool (original prototype)
 ├── app.py                           # Flask demo (original prototype)
