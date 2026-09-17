@@ -1,5 +1,5 @@
 """Generates a synthetic EOB PDF modeled on the real Anthem case from the
-TexMed billing thread (Faten Haddad, claim 2021223CF200498) for demo/testing."""
+RemitGuard billing thread (Faten Haddad, claim 2021223CF200498) for demo/testing."""
 
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas

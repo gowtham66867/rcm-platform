@@ -1,5 +1,5 @@
 """
-TexMed Multi-Agent Orchestrator
+RemitGuard Multi-Agent Orchestrator
 
 Coordinates the full EOB analysis pipeline:
 

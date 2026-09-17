@@ -24,7 +24,7 @@ PAGE = """
 <!doctype html>
 <html>
 <head>
-<title>TexMed Recoupment Detector</title>
+<title>RemitGuard Recoupment Detector</title>
 <style>
   body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 40px auto; color: #1a1a1a; }
   h1 { font-size: 22px; }
