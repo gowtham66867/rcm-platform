@@ -1,5 +1,5 @@
 """
-TexMed Platform — behavioral health RCM operating system.
+RemitGuard Platform — behavioral health RCM operating system.
 Purpose-built platform for behavioral health billing teams that catches
 hidden payer clawbacks, tracks SCA lifecycles, and manages ERA/EFT
 enrollment status across all active payers.
@@ -26,7 +26,7 @@ from api.routes.ws_pipeline import router as ws_pipeline_router
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="TexMed Platform",
+    title="RemitGuard Platform",
     description="Behavioral health RCM operating system — recoupment detection, SCA lifecycle, ERA/EFT enrollment tracking.",
     version="0.1.0",
 )
@@ -72,7 +72,7 @@ def warm_semantic_index() -> None:
 # Health check — registered before the SPA catch-all
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "TexMed Platform"}
+    return {"status": "ok", "service": "RemitGuard Platform"}
 
 
 @app.get("/api/semantic/stats")

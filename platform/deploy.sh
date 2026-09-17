@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-# ── TexMed Cloud Run Deployment ─────────────────────────────────────
+# ── RemitGuard Cloud Run Deployment ─────────────────────────────────────
 PROJECT_ID="gowthamaccount"
 REGION="us-central1"
-SERVICE_NAME="texmed-platform"
+SERVICE_NAME="remitguard"
 IMAGE="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
 
 echo ""
-echo "🚀  TexMed → Google Cloud Run"
+echo "🚀  RemitGuard → Google Cloud Run"
 echo "    Project : $PROJECT_ID"
 echo "    Region  : $REGION"
 echo "    Service : $SERVICE_NAME"

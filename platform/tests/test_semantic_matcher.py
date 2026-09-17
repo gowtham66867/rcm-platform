@@ -3,7 +3,7 @@ Integration tests for the Moss semantic recall layer.
 
 WHAT THESE COVER
 ----------------
-The wiring between TexMed and the Moss SDK: index build, query dispatch,
+The wiring between RemitGuard and the Moss SDK: index build, query dispatch,
 nearest-neighbour classification, flag construction, confidence scoring, the
 approval learning loop, and graceful degradation.
 
@@ -29,6 +29,7 @@ import sys
 
 import pytest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 moss = pytest.importorskip("moss", reason="moss requires Python >= 3.10")
@@ -37,71 +38,7 @@ from moss import DocumentInfo, MutationOptions, QueryOptions  # noqa: E402
 from agents.semantic_matcher import SemanticMatcher  # noqa: E402
 
 
-# ── stub transport ────────────────────────────────────────────────────────────
-
-
-class _Hit:
-    def __init__(self, doc, score):
-        self.id = doc.id
-        self.text = doc.text
-        self.metadata = doc.metadata
-        self.score = score
-        self.payload = None
-
-
-class _Result:
-    def __init__(self, docs, query):
-        self.docs = docs
-        self.query = query
-        self.time_taken_ms = 1.2
-
-
-def _tokens(text):
-    return {t for t in "".join(c.lower() if c.isalnum() else " " for c in text).split() if len(t) > 2}
-
-
-class _StubClient:
-    """Mimics the MossClient surface the matcher uses. No network."""
-
-    def __init__(self):
-        self.docs = {}
-        self.created = []
-        self.loaded = []
-        self.load_should_fail = True   # simulate "index does not exist yet"
-
-    async def create_index(self, name, docs, model_id=None, *, wait=True):
-        assert all(isinstance(d, DocumentInfo) for d in docs), "must pass real DocumentInfo"
-        self.created.append((name, model_id, len(docs)))
-        for d in docs:
-            self.docs[d.id] = d
-        self.load_should_fail = False
-        return {"ok": True}
-
-    async def load_index(self, name, auto_refresh=False,
-                         polling_interval_in_seconds=600, cache_path=None):
-        if self.load_should_fail:
-            raise RuntimeError(f"index '{name}' not found")
-        self.loaded.append(name)
-        return name
-
-    async def add_docs(self, name, docs, options=None):
-        assert all(isinstance(d, DocumentInfo) for d in docs)
-        assert options is None or isinstance(options, MutationOptions)
-        for d in docs:
-            self.docs[d.id] = d
-        return {"added": len(docs)}
-
-    async def query(self, name, query, options=None):
-        assert isinstance(options, QueryOptions), "must pass real QueryOptions"
-        q = _tokens(query)
-        scored = []
-        for d in self.docs.values():
-            dt = _tokens(d.text)
-            overlap = len(q & dt) / len(q | dt) if (q | dt) else 0.0
-            scored.append(_Hit(d, overlap))
-        scored.sort(key=lambda h: h.score, reverse=True)
-        top_k = getattr(options, "top_k", 3) or 3
-        return _Result(scored[:top_k], query)
+from stub_moss import StubMossClient as _StubClient  # noqa: E402
 
 
 @pytest.fixture
@@ -295,3 +232,113 @@ def test_money_gate_suppresses_amountless_lines(matcher):
     before = matcher.stats()["queries"]
     _detect_flags(text, compiled, matcher=matcher, semantic_requires_amount=False)
     assert matcher.stats()["queries"] - before == 3
+
+
+# ── concurrency ───────────────────────────────────────────────────────────────
+
+
+def test_concurrent_match_keeps_telemetry_exact(matcher):
+    """
+    `match()` is called from the orchestrator's worker threads. `counter += 1`
+    is a read-modify-write, so without a lock these counters silently lose
+    updates under load. Eight threads is enough to expose it reliably.
+    """
+    import threading
+
+    line = "Amount recouped from this payment    940.55"
+    per_thread, threads = 40, 8
+    errors = []
+
+    def worker():
+        try:
+            for _ in range(per_thread):
+                matcher.match(line)
+        except Exception as exc:                    # pragma: no cover
+            errors.append(exc)
+
+    workers = [threading.Thread(target=worker) for _ in range(threads)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+
+    assert not errors, f"concurrent match raised: {errors[:3]}"
+    stats = matcher.stats()
+    assert stats["queries"] == threads * per_thread, "lost counter updates under concurrency"
+    assert stats["semantic_flags"] == threads * per_thread
+    assert stats["latency_ms_p50"] is not None
+
+
+def test_latency_samples_are_bounded(monkeypatch):
+    """
+    An unbounded latency list grows for the life of the process. A long-running
+    Cloud Run instance would accumulate one float per query forever.
+    """
+    from agents import semantic_matcher as sm
+    from stub_moss import StubMossClient
+
+    monkeypatch.setattr(sm, "LATENCY_SAMPLE_CAP", 50)
+    m = sm.SemanticMatcher(client=StubMossClient(), threshold=0.05)
+    # the deque is sized at construction, so rebuild it under the patched cap
+    m._latencies_ms = sm.deque(maxlen=50)
+    assert m.warm(timeout=30)
+
+    for _ in range(200):
+        m.match("Amount recouped from this payment    940.55")
+
+    assert len(m._latencies_ms) == 50, "latency samples must be a bounded ring buffer"
+    assert m.stats()["queries"] == 200, "the counter itself must keep counting"
+
+
+def test_reset_stats_clears_telemetry(matcher):
+    matcher.match("Amount recouped from this payment    940.55")
+    assert matcher.stats()["queries"] > 0
+    matcher.reset_stats()
+    s = matcher.stats()
+    assert s["queries"] == 0 and s["semantic_flags"] == 0
+    assert s["latency_ms_p50"] is None
+
+
+# ── probe (eval surface) ──────────────────────────────────────────────────────
+
+
+def test_probe_returns_raw_hit_below_threshold(matcher):
+    """
+    probe() must ignore the threshold and label filter — the offline sweep
+    depends on seeing hits that match() would reject.
+    """
+    matcher.threshold = 0.99
+    assert matcher.match("Amount recouped from this payment  940.55") is None
+
+    raw = matcher.probe("Amount recouped from this payment  940.55")
+    assert raw is not None
+    assert raw["label"] in ("recoupment", "benign")
+    assert 0.0 <= raw["score"] <= 1.0
+    assert raw["query_ms"] > 0
+
+
+def test_probe_respects_the_prefilter(matcher):
+    before = matcher.stats()["queries"]
+    assert matcher.probe("$12.00") is None
+    assert matcher.stats()["queries"] == before
+
+
+# ── invariant ─────────────────────────────────────────────────────────────────
+
+
+def test_semantic_layer_never_removes_a_regex_detection(matcher):
+    """
+    Safety property: adding Moss may only ever ADD flags. If enabling it could
+    drop a detection the regex library already made, the layer would be a
+    liability rather than an improvement. Checked across the whole eval set.
+    """
+    import eval_data
+    from agents.recoupment_agent import RecoupmentAgent
+
+    baseline = RecoupmentAgent(use_semantic=False)
+    augmented = RecoupmentAgent(matcher=matcher)
+
+    for line in eval_data.build_eval_set():
+        if baseline.run(line.text, "t.pdf").flags:
+            assert augmented.run(line.text, "t.pdf").flags, (
+                f"semantic layer dropped a regex detection: {line.text!r}")

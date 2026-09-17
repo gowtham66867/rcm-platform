@@ -1,5 +1,5 @@
 """
-WebSocket streaming demo — TexMed EOB pipeline.
+WebSocket streaming demo — RemitGuard EOB pipeline.
 
 Connects to ws://localhost:8000/ws/pipeline, submits both sample PDFs
 and the sample ledger, then prints each streamed event with colour coding
@@ -160,7 +160,7 @@ async def run(host: str, port: int, samples_dir: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="TexMed WebSocket streaming demo")
+    parser = argparse.ArgumentParser(description="RemitGuard WebSocket streaming demo")
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(

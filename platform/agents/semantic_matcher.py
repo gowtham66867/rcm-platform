@@ -43,7 +43,7 @@ pipeline exactly as it was. `enabled` reports the state; `stats()` reports why.
 Configuration (environment):
     MOSS_PROJECT_ID         required to enable
     MOSS_PROJECT_KEY        required to enable
-    MOSS_INDEX_NAME         default "texmed-recoupment-phrases"
+    MOSS_INDEX_NAME         default "remitguard-recoupment-phrases"
     MOSS_SCORE_THRESHOLD    default 0.45
     MOSS_ALPHA              default 0.6   (hybrid semantic/keyword weight)
     MOSS_TOP_K              default 3
@@ -60,6 +60,7 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -88,12 +89,17 @@ CORPUS_PATH = os.environ.get(
     os.path.join(os.path.dirname(__file__), "..", "recoupment_corpus.json"),
 )
 
-DEFAULT_INDEX_NAME = os.environ.get("MOSS_INDEX_NAME", "texmed-recoupment-phrases")
+DEFAULT_INDEX_NAME = os.environ.get("MOSS_INDEX_NAME", "remitguard-recoupment-phrases")
 DEFAULT_THRESHOLD = float(os.environ.get("MOSS_SCORE_THRESHOLD", "0.45"))
 DEFAULT_ALPHA = float(os.environ.get("MOSS_ALPHA", "0.6"))
 DEFAULT_TOP_K = int(os.environ.get("MOSS_TOP_K", "3"))
 
 _WORD_RE = re.compile(r"[A-Za-z]{2,}")
+
+# Latency samples are kept in a ring buffer. An unbounded list would grow for
+# the life of the process — a Cloud Run instance chewing through EOB batches
+# would accumulate one float per query forever.
+LATENCY_SAMPLE_CAP = int(os.environ.get("MOSS_LATENCY_SAMPLES", "10000"))
 _QUERY_TIMEOUT_S = float(os.environ.get("MOSS_QUERY_TIMEOUT", "5"))
 _WARM_TIMEOUT_S = float(os.environ.get("MOSS_WARM_TIMEOUT", "180"))
 MIN_WORDS_TO_QUERY = 3
@@ -187,10 +193,15 @@ class SemanticMatcher:
         self._disabled_reason: Optional[str] = None
         self._lock = threading.Lock()
 
-        # telemetry
+        # Telemetry. `match()` is called concurrently from the orchestrator's
+        # worker threads, and `counter += 1` is a read-modify-write that loses
+        # updates under threading — hence a dedicated lock, kept separate from
+        # `_lock` so recording a query never contends with a warm.
+        self._stats_lock = threading.Lock()
         self._queries = 0
         self._hits = 0
-        self._latencies_ms: List[float] = []
+        self._latencies_ms = deque(maxlen=LATENCY_SAMPLE_CAP)
+        self._moss_reported_ms = deque(maxlen=LATENCY_SAMPLE_CAP)
         self._learned_docs = 0
         self._last_error: Optional[str] = None
 
@@ -326,6 +337,62 @@ class SemanticMatcher:
             return False
         return len(_WORD_RE.findall(stripped)) >= MIN_WORDS_TO_QUERY
 
+    def probe(self, line: str) -> Optional[Dict[str, Any]]:
+        """
+        Query Moss and return the raw top hit, WITHOUT applying the label or
+        threshold filter.
+
+        `match()` is the production path. `probe()` exists for the eval harness:
+        collecting the raw (label, score) once per line lets a threshold sweep
+        be computed offline over the whole range, instead of re-querying the
+        corpus at every candidate threshold.
+
+        Returns None only when the matcher is unavailable, the line is filtered
+        out before querying, or the query fails.
+        """
+        if not self.ready or not self.is_queryable(line):
+            return None
+
+        started = time.perf_counter()
+        try:
+            result = self._loop.call(
+                self._client.query(
+                    self.index_name,
+                    line.strip(),
+                    QueryOptions(top_k=self.top_k, alpha=self.alpha),
+                ),
+                timeout=_QUERY_TIMEOUT_S,
+            )
+        except Exception as exc:
+            self._last_error = f"{type(exc).__name__}: {exc}"
+            logger.debug("[SemanticMatcher] query failed: %s", self._last_error)
+            return None
+
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        moss_ms = getattr(result, "time_taken_ms", None)
+        with self._stats_lock:
+            self._queries += 1
+            self._latencies_ms.append(elapsed_ms)
+            if isinstance(moss_ms, (int, float)):
+                self._moss_reported_ms.append(float(moss_ms))
+
+        docs = getattr(result, "docs", None) or []
+        if not docs:
+            return None
+
+        top = docs[0]
+        metadata = getattr(top, "metadata", None) or {}
+        return {
+            "label": str(metadata.get("label", "")).lower(),
+            "score": float(getattr(top, "score", 0.0) or 0.0),
+            "doc_id": str(getattr(top, "id", "")),
+            "text": getattr(top, "text", "") or "",
+            "payer": str(metadata.get("payer", "generic")),
+            "learned": str(metadata.get("learned", "")).lower() == "true",
+            "query_ms": elapsed_ms,
+            "engine_ms": float(moss_ms) if isinstance(moss_ms, (int, float)) else None,
+        }
+
     def match(self, line: str) -> Optional[SemanticMatch]:
         """
         Return a SemanticMatch when `line` reads as payer clawback language.
@@ -353,8 +420,16 @@ class SemanticMatcher:
             return None
 
         elapsed_ms = (time.perf_counter() - started) * 1000.0
-        self._queries += 1
-        self._latencies_ms.append(elapsed_ms)
+        # Moss reports its own in-engine time; the difference against our
+        # wall-clock is this layer's bridge overhead (thread hop + scheduling),
+        # which the eval harness reports separately so the retrieval number is
+        # not quietly inflated by our own plumbing.
+        moss_ms = getattr(result, "time_taken_ms", None)
+        with self._stats_lock:
+            self._queries += 1
+            self._latencies_ms.append(elapsed_ms)
+            if isinstance(moss_ms, (int, float)):
+                self._moss_reported_ms.append(float(moss_ms))
 
         docs = getattr(result, "docs", None) or []
         if not docs:
@@ -370,7 +445,8 @@ class SemanticMatcher:
         if label != "recoupment" or score < self.threshold:
             return None
 
-        self._hits += 1
+        with self._stats_lock:
+            self._hits += 1
         return SemanticMatch(
             line=line.strip(),
             matched_text=getattr(top, "text", "") or "",
@@ -419,7 +495,8 @@ class SemanticMatcher:
                 ),
                 timeout=_QUERY_TIMEOUT_S * 2,
             )
-            self._learned_docs += 1
+            with self._stats_lock:
+                self._learned_docs += 1
             logger.info("[SemanticMatcher] learned confirmed clawback phrase (%s)", doc_id)
             return True
         except Exception as exc:
@@ -429,14 +506,31 @@ class SemanticMatcher:
 
     # ── telemetry ─────────────────────────────────────────────────────────────
 
+    def reset_stats(self) -> None:
+        """Clear telemetry. Used between eval configurations."""
+        with self._stats_lock:
+            self._queries = 0
+            self._hits = 0
+            self._learned_docs = 0
+            self._latencies_ms.clear()
+            self._moss_reported_ms.clear()
+
     def stats(self) -> Dict[str, Any]:
-        lat = sorted(self._latencies_ms)
+        # Snapshot under the lock so a concurrent match() cannot mutate the
+        # deques mid-read.
+        with self._stats_lock:
+            lat = sorted(self._latencies_ms)
+            moss_lat = sorted(self._moss_reported_ms)
+            queries, hits, learned = self._queries, self._hits, self._learned_docs
+
+        def _pct(samples: List[float], p: float) -> Optional[float]:
+            if not samples:
+                return None
+            idx = min(len(samples) - 1, int(round(p * (len(samples) - 1))))
+            return round(samples[idx], 3)
 
         def pct(p: float) -> Optional[float]:
-            if not lat:
-                return None
-            idx = min(len(lat) - 1, int(round(p * (len(lat) - 1))))
-            return round(lat[idx], 3)
+            return _pct(lat, p)
 
         return {
             "enabled": self.enabled,
@@ -446,12 +540,22 @@ class SemanticMatcher:
             "corpus_size": len(self._corpus),
             "threshold": self.threshold,
             "alpha": self.alpha,
-            "queries": self._queries,
-            "semantic_flags": self._hits,
-            "learned_phrases": self._learned_docs,
+            "queries": queries,
+            "semantic_flags": hits,
+            "learned_phrases": learned,
+            # End-to-end as the agent experiences it: Moss + our thread hop.
             "latency_ms_p50": pct(0.50),
             "latency_ms_p95": pct(0.95),
+            "latency_ms_p99": pct(0.99),
             "latency_ms_max": round(lat[-1], 3) if lat else None,
+            # Moss's own reported in-engine time, for comparison.
+            "moss_engine_ms_p50": _pct(moss_lat, 0.50),
+            "moss_engine_ms_p95": _pct(moss_lat, 0.95),
+            "bridge_overhead_ms_p50": (
+                round(pct(0.50) - _pct(moss_lat, 0.50), 3)
+                if lat and moss_lat else None
+            ),
+            "latency_samples": len(lat),
             "last_error": self._last_error,
         }
 

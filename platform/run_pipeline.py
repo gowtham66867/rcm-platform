@@ -1,5 +1,5 @@
 """
-TexMed Multi-Agent Pipeline — live demo runner.
+RemitGuard Multi-Agent Pipeline — live demo runner.
 
 Runs the full Orchestrator pipeline against one or more real EOB samples,
 printing the full agent trace to stdout so every iteration loop,
@@ -164,7 +164,7 @@ def dismiss_ticket(ticket_id: int, notes: str = ""):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TexMed multi-agent pipeline runner")
+    parser = argparse.ArgumentParser(description="RemitGuard multi-agent pipeline runner")
     parser.add_argument("pdfs", nargs="*", help="PDF file path(s) to analyze")
     parser.add_argument("--ledger", help="Claims ledger CSV path")
     parser.add_argument("--review", action="store_true", help="Show pending review queue")
